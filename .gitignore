@@ -37,3 +37,6 @@ config.yml
 .env
 lbcrawler
 coverage.txt
+cmd/app/logs
+__debug_*
+lbcrawler-linux-x86

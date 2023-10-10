@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"lbc/internal/entity"
 	"lbc/pkg/log"
@@ -18,152 +17,94 @@ import (
 	"golang.org/x/net/html"
 )
 
-const (
-	urlHome     string = "https://tocandraw.com/"
-	urlPost     string = "https://tocandraw.com/post-sitemap.xml"
-	urlPage     string = "https://tocandraw.com/page-sitemap.xml"
-	urlCategory string = "https://tocandraw.com/category-sitemap.xml"
-	urlTag      string = "https://tocandraw.com/post_tag-sitemap.xml"
-	urlAuthor   string = "https://tocandraw.com/author-sitemap.xml"
-)
+type Crawler struct {
+	isMobile   bool
+	siteMapURL []string
+	urlInSite  []urlInSite
+	additional []string
 
-var (
-	clientSingle *resty.Client
-	urlMapLock   sync.RWMutex
-	urlMap       = make(map[string]bool)
-	logger       = log.Get()
-	isMobile     = false
-)
+	urlMap     map[string]struct{}
+	urlMapLock sync.RWMutex
 
-func Run() {
-	allSitemap := []string{urlPost, urlPage, urlCategory, urlTag, urlAuthor}
-	allURL := []string{}
-	for _, url := range allSitemap {
-		urls, err := getSite(url)
-		if err != nil {
-			logger.Error(err)
-			continue
-		}
-		allURL = append(allURL, urls...)
-	}
-
-	allURL = append(allURL, urlHome)
-	logger.Info("All URL: ", len(allURL))
-	for _, url := range allURL {
-		tmpURL := url
-		go func() {
-			err := crawl(tmpURL)
-			if err != nil {
-				logger.Error(err)
-				return
-			}
-		}()
-	}
+	client *resty.Client
+	logger *log.Log
 }
 
-func Clear() {
-	urlMapLock.Lock()
-	urlMap = make(map[string]bool)
-	urlMapLock.Unlock()
-	clientSingle = nil
+type urlInSite struct {
+	urlArr []string
 }
 
-func SetMobile() {
-	isMobile = true
-}
-
-func getSite(url string) ([]string, error) {
-	client := getHTTPClient()
-	resp, err := client.R().Get(url)
-	if err != nil {
-		return nil, err
+func NewCrawler(siteMapURL []string, isMobile bool, additional ...string) *Crawler {
+	c := &Crawler{
+		siteMapURL: siteMapURL,
+		isMobile:   isMobile,
+		client:     resty.New(),
+		logger:     log.Get(),
+		urlMap:     make(map[string]struct{}),
+		additional: additional,
 	}
 
-	var urlset entity.SiteMap
-	err = xml.Unmarshal(resp.Body(), &urlset)
-	if err != nil {
-		return nil, err
-	}
-	var urls []string
-	for _, url := range urlset.URL {
-		urls = append(urls, url.Loc)
-	}
-	return urls, nil
-}
-
-func getHTTPClient() *resty.Client {
-	if clientSingle != nil {
-		return clientSingle
-	}
-
-	newClient := resty.New()
 	if isMobile {
-		newClient.SetHeader("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1")
+		c.client.SetHeader("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1")
 	}
-	clientSingle = newClient
-	return clientSingle
+
+	if err := c.getSite(); err != nil {
+		c.logger.Error(err)
+		return nil
+	}
+
+	return c
 }
 
-func crawl(crawlURL string) error {
-	urlMapLock.RLock()
-	_, ok := urlMap[crawlURL]
-	urlMapLock.RUnlock()
-	if ok {
-		return nil
+func (c *Crawler) getSite() error {
+	c.urlInSite = append(c.urlInSite, urlInSite{urlArr: c.additional})
+	for _, url := range c.siteMapURL {
+		resp, err := c.client.R().Get(url)
+		if err != nil {
+			return err
+		}
+
+		var urlset entity.SiteMap
+		err = xml.Unmarshal(resp.Body(), &urlset)
+		if err != nil {
+			return err
+		}
+
+		var data urlInSite
+		for _, url := range urlset.URL {
+			data.urlArr = append(data.urlArr, url.Loc)
+		}
+		c.urlInSite = append(c.urlInSite, data)
+		c.logger.Infof("Found %d urls in %s", len(data.urlArr), url)
 	}
-
-	urlMapLock.Lock()
-	urlMap[crawlURL] = true
-	urlMapLock.Unlock()
-
-	client := getHTTPClient()
-	time.Sleep(1500 * time.Millisecond)
-	resp, err := client.R().Get(crawlURL)
-	if err != nil {
-		return err
-	}
-
-	p, err := url.QueryUnescape(crawlURL)
-	if err == nil {
-		logger.Info(p)
-	}
-
-	if resp.StatusCode() == http.StatusNotFound {
-		logger.Errorf("404: %s", crawlURL)
-		return nil
-	}
-
-	if resp.StatusCode() != http.StatusOK {
-		return errors.New("status code not ok")
-	}
-
-	reader := bytes.NewReader(resp.Body())
-	doc, err := html.Parse(reader)
-	if err != nil {
-		return err
-	}
-
-	extractURLs(doc)
 	return nil
 }
 
-func extractURLs(n *html.Node) {
-	defer func() {
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			extractURLs(c)
-		}
-	}()
-
-	if n.Type != html.ElementNode {
-		return
+func (c *Crawler) getHTMLBody(url string) ([]byte, error) {
+	resp, err := c.client.R().Get(url)
+	if err != nil {
+		return nil, err
 	}
 
-	var foundURL []string
+	if resp.StatusCode() == http.StatusNotFound {
+		c.logger.Errorf("404: %s", url)
+		return nil, nil
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return nil, errors.New("status code not ok")
+	}
+
+	return resp.Body(), nil
+}
+
+func (c *Crawler) foundURL(n *html.Node, urlMap map[string]struct{}) {
 	for _, attr := range n.Attr {
-		splits := strings.Split(attr.Val, " ")
-		for _, split := range splits {
+		for _, split := range strings.Split(attr.Val, " ") {
 			parseURL, err := url.Parse(split)
 			if err != nil {
+				continue
+			} else if !parseURL.IsAbs() {
 				continue
 			}
 			switch {
@@ -174,17 +115,70 @@ func extractURLs(n *html.Node) {
 			case strings.Contains(parseURL.String(), "wp-json"):
 				continue
 			default:
-				foundURL = append(foundURL, parseURL.String())
+				if c.appendURL(parseURL.String()) {
+					urlMap[parseURL.String()] = struct{}{}
+				}
 			}
 		}
 	}
+	for node := n.FirstChild; node != nil; node = node.NextSibling {
+		if node.Type == html.ElementNode {
+			c.foundURL(node, urlMap)
+		}
+	}
+}
 
-	for _, v := range foundURL {
-		go func(url string) {
-			if err := crawl(url); err != nil {
-				logger.Error(err)
-				return
+func (c *Crawler) appendURL(url string) bool {
+	c.urlMapLock.RLock()
+	_, ok := c.urlMap[url]
+	c.urlMapLock.RUnlock()
+	if ok {
+		return false
+	}
+	c.urlMapLock.Lock()
+	c.urlMap[url] = struct{}{}
+	c.urlMapLock.Unlock()
+	return true
+}
+
+func (c *Crawler) crawl(url string, waitGroup *sync.WaitGroup) {
+	c.logger.Infof("Crawling %s", url)
+	if waitGroup != nil {
+		defer waitGroup.Done()
+	}
+	bo, err := c.getHTMLBody(url)
+	if err != nil {
+		c.logger.Error(err)
+		return
+	}
+
+	reader := bytes.NewReader(bo)
+	doc, err := html.Parse(reader)
+	if err != nil {
+		c.logger.Error(err)
+		return
+	}
+
+	urlMap := make(map[string]struct{})
+	c.foundURL(doc, urlMap)
+	for k := range urlMap {
+		c.crawl(k, nil)
+	}
+}
+
+func (c *Crawler) Run() {
+	waitGroup := &sync.WaitGroup{}
+	for _, v := range c.urlInSite {
+		var concurrency int
+		for _, url := range v.urlArr {
+			if concurrency > 10 {
+				waitGroup.Wait()
+				concurrency = 0
 			}
-		}(v)
+			concurrency++
+			waitGroup.Add(1)
+			go c.crawl(url, waitGroup)
+		}
+		waitGroup.Wait()
 	}
 }

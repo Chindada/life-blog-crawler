@@ -15,6 +15,11 @@ build: ### build
 	@go build -o $(BIN_NAME) ./cmd/app
 .PHONY: build
 
+build-linux: ### build for linux
+	@go mod tidy && go mod download && \
+	GOOS=linux GOARCH=amd64 go build -o $(BIN_NAME)-linux-x86 ./cmd/app
+.PHONY: build-linux
+
 go-mod-update: ### go-mod-update
 	@./scripts/gomod_update.sh
 .PHONY: go-mod-update
