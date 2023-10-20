@@ -21,6 +21,13 @@ docker run --rm \
     maochindada/life-blog-crawler:latest
 ```
 
+- Stop
+
+```sh
+docker stop lbcrawler
+docker system prune --volumes -f
+```
+
 ```sh
 docker rmi -f $(docker images -a -q)
 ```
