@@ -3,6 +3,8 @@ FROM golang:1.21.1-bullseye as build-stage
 USER root
 
 ENV TZ=Asia/Taipei
+ENV CLOUDFLARE_AUTH=
+ENV CLOUDFLARE_ZONE=
 
 WORKDIR /
 RUN mkdir build_space
@@ -29,4 +31,4 @@ WORKDIR /lbcrawler
 
 COPY --from=build-stage /build_space/lbcrawler ./lbcrawler
 
-ENTRYPOINT ["/lbcrawler/lbcrawler"]
+ENTRYPOINT ["/lbcrawler/lbcrawler", "--cloudflare-auth", ${CLOUDFLARE_AUTH}, "--cloudflare-zone", ${CLOUDFLARE_ZONE}]
