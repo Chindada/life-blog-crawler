@@ -1,6 +1,10 @@
 package main
 
-import "lbc/internal/app"
+import (
+	"os"
+
+	"lbc/internal/app"
+)
 
 const (
 	urlHome     string = "https://tocandraw.com/"
@@ -12,8 +16,14 @@ const (
 )
 
 func main() {
+	app.ReadCommand()
+
 	allSitemap := []string{urlPost, urlPage, urlCategory, urlTag, urlAuthor}
 	crawler := app.NewCrawler(allSitemap, false, urlHome)
+	if err := crawler.PurgeCache(); err != nil {
+		os.Exit(1)
+	}
+
 	crawler.Run()
 
 	mobileCrawler := app.NewCrawler(allSitemap, true, urlHome)

@@ -1,19 +1,17 @@
 BIN_NAME = lbcrawler
 
-run: ### run
+build: ### build
+	@echo "Building $(BIN_NAME)..."
 	@go mod tidy
 	@go mod download
-	@echo "Building $(BIN_NAME)..."
 	@go build -o $(BIN_NAME) ./cmd/app
+	@echo "Build $(BIN_NAME) done"
+.PHONY: build
+
+run: build ### run
 	@echo "Running $(BIN_NAME)..."
 	@./$(BIN_NAME)
 .PHONY: run
-
-build: ### build
-	@go mod tidy
-	@go mod download
-	@go build -o $(BIN_NAME) ./cmd/app
-.PHONY: build
 
 build-linux: ### build for linux
 	@go mod tidy && go mod download && \

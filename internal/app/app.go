@@ -5,15 +5,17 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"lbc/internal/entity"
-	"lbc/pkg/log"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/spf13/viper"
 	"golang.org/x/net/html"
 )
 
@@ -27,7 +29,6 @@ type Crawler struct {
 	urlMapLock sync.RWMutex
 
 	client *resty.Client
-	logger *log.Log
 }
 
 type urlInSite struct {
@@ -39,17 +40,18 @@ func NewCrawler(siteMapURL []string, isMobile bool, additional ...string) *Crawl
 		siteMapURL: siteMapURL,
 		isMobile:   isMobile,
 		client:     resty.New(),
-		logger:     log.Get(),
 		urlMap:     make(map[string]struct{}),
 		additional: additional,
 	}
 
 	if isMobile {
-		c.client.SetHeader("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1")
+		c.client.SetHeader(
+			"User-Agent",
+			"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+		)
 	}
 
 	if err := c.getSite(); err != nil {
-		c.logger.Error(err)
 		return nil
 	}
 
@@ -75,19 +77,43 @@ func (c *Crawler) getSite() error {
 			data.urlArr = append(data.urlArr, url.Loc)
 		}
 		c.urlInSite = append(c.urlInSite, data)
-		c.logger.Infof("Found %d urls in %s", len(data.urlArr), url)
+		fmt.Printf("Found %d urls in %s\n", len(data.urlArr), url)
 	}
 	return nil
 }
 
-func (c *Crawler) getHTMLBody(url string) ([]byte, error) {
-	resp, err := c.client.R().Get(url)
+func (c *Crawler) getHTMLBody(target string) ([]byte, error) {
+	c.urlMapLock.RLock()
+	_, ok := c.urlMap[target]
+	c.urlMapLock.RUnlock()
+	if ok {
+		return nil, nil
+	}
+
+	c.urlMapLock.Lock()
+	c.urlMap[target] = struct{}{}
+	c.urlMapLock.Unlock()
+
+	if c.isMobile {
+		if strings.Contains(target, "?noamp=mobile") {
+			target = strings.ReplaceAll(target, "?noamp=mobile", "?amp=1")
+		}
+	} else {
+		if strings.Contains(target, "?amp=1") {
+			target = strings.ReplaceAll(target, "?amp=1", "?noamp=mobile")
+		}
+	}
+
+	// if un, err := url.PathUnescape(target); err == nil {
+	// 	fmt.Println(un)
+	// }
+	fmt.Print("+")
+	resp, err := c.client.R().Get(target)
 	if err != nil {
 		return nil, err
 	}
 
 	if resp.StatusCode() == http.StatusNotFound {
-		c.logger.Errorf("404: %s", url)
 		return nil, nil
 	}
 
@@ -97,6 +123,12 @@ func (c *Crawler) getHTMLBody(url string) ([]byte, error) {
 
 	return resp.Body(), nil
 }
+
+const (
+	topDomain     = "tocandraw.com"
+	urlTypePhp    = ".php"
+	urlTypeWpJSON = "wp-json"
+)
 
 func (c *Crawler) foundURL(n *html.Node, urlMap map[string]struct{}) {
 	for _, attr := range n.Attr {
@@ -108,14 +140,12 @@ func (c *Crawler) foundURL(n *html.Node, urlMap map[string]struct{}) {
 				continue
 			}
 			switch {
-			case !strings.Contains(parseURL.String(), "tocandraw.com"):
+			case !strings.Contains(parseURL.String(), topDomain):
 				continue
-			case strings.Contains(parseURL.String(), ".php"):
-				continue
-			case strings.Contains(parseURL.String(), "wp-json"):
+			case strings.Contains(parseURL.String(), urlTypePhp), strings.Contains(parseURL.String(), urlTypeWpJSON):
 				continue
 			default:
-				if c.appendURL(parseURL.String()) {
+				if _, ok := urlMap[parseURL.String()]; !ok {
 					urlMap[parseURL.String()] = struct{}{}
 				}
 			}
@@ -128,42 +158,34 @@ func (c *Crawler) foundURL(n *html.Node, urlMap map[string]struct{}) {
 	}
 }
 
-func (c *Crawler) appendURL(url string) bool {
-	c.urlMapLock.RLock()
-	_, ok := c.urlMap[url]
-	c.urlMapLock.RUnlock()
-	if ok {
-		return false
-	}
-	c.urlMapLock.Lock()
-	c.urlMap[url] = struct{}{}
-	c.urlMapLock.Unlock()
-	return true
-}
-
 func (c *Crawler) crawl(url string, waitGroup *sync.WaitGroup) {
-	c.logger.Infof("Crawling %s", url)
 	if waitGroup != nil {
 		defer waitGroup.Done()
 	}
+
 	bo, err := c.getHTMLBody(url)
 	if err != nil {
-		c.logger.Error(err)
+		return
+	}
+
+	if bo == nil {
 		return
 	}
 
 	reader := bytes.NewReader(bo)
 	doc, err := html.Parse(reader)
 	if err != nil {
-		c.logger.Error(err)
 		return
 	}
 
+	subWaitGroup := &sync.WaitGroup{}
 	urlMap := make(map[string]struct{})
 	c.foundURL(doc, urlMap)
 	for k := range urlMap {
-		c.crawl(k, nil)
+		subWaitGroup.Add(1)
+		go c.crawl(k, subWaitGroup)
 	}
+	subWaitGroup.Wait()
 }
 
 func (c *Crawler) Run() {
@@ -171,14 +193,41 @@ func (c *Crawler) Run() {
 	for _, v := range c.urlInSite {
 		var concurrency int
 		for _, url := range v.urlArr {
-			if concurrency > 10 {
+			if concurrency > 30 {
 				waitGroup.Wait()
 				concurrency = 0
 			}
 			concurrency++
 			waitGroup.Add(1)
+			if c.isMobile {
+				url = fmt.Sprintf("%s?amp=1", url)
+			}
 			go c.crawl(url, waitGroup)
 		}
 		waitGroup.Wait()
 	}
+}
+
+func (c *Crawler) PurgeCache() error {
+	cloudflareAuth := viper.GetString("cloudflare-auth")
+	cloudflareZoneID := viper.GetString("cloudflare-zone")
+
+	resp, err := c.client.R().
+		SetHeader("Authorization", cloudflareAuth).
+		SetBody(map[string]any{
+			"purge_everything": true,
+		}).
+		Post(fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/purge_cache", cloudflareZoneID))
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		fmt.Println(resp.String())
+		return errors.New("status code not ok")
+	}
+
+	fmt.Println("Purge cache success, wait 45 second")
+	time.Sleep(45 * time.Second)
+	return nil
 }
