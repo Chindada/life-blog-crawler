@@ -3,6 +3,7 @@ package app
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -35,7 +36,7 @@ type urlInSite struct {
 	urlArr []string
 }
 
-func NewCrawler(siteMapURL []string, isMobile bool, additional ...string) *Crawler {
+func NewCrawler(siteMapURL []string, isMobile bool, additional ...string) (*Crawler, error) {
 	c := &Crawler{
 		siteMapURL: siteMapURL,
 		isMobile:   isMobile,
@@ -50,12 +51,13 @@ func NewCrawler(siteMapURL []string, isMobile bool, additional ...string) *Crawl
 			"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 		)
 	}
+	c.client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true})
 
 	if err := c.getSite(); err != nil {
-		return nil
+		return nil, err
 	}
 
-	return c
+	return c, nil
 }
 
 func (c *Crawler) getSite() error {
@@ -107,7 +109,7 @@ func (c *Crawler) getHTMLBody(target string) ([]byte, error) {
 	// if un, err := url.PathUnescape(target); err == nil {
 	// 	fmt.Println(un)
 	// }
-	fmt.Print("+")
+	fmt.Print(".")
 	resp, err := c.client.R().Get(target)
 	if err != nil {
 		return nil, err

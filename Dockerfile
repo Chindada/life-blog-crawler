@@ -31,4 +31,4 @@ WORKDIR /lbcrawler
 
 COPY --from=build-stage /build_space/lbcrawler ./lbcrawler
 
-ENTRYPOINT ["/lbcrawler/lbcrawler", "--cloudflare-auth", ${CLOUDFLARE_AUTH}, "--cloudflare-zone", ${CLOUDFLARE_ZONE}]
+ENTRYPOINT /lbcrawler/lbcrawler run --cloudflare-auth="$CLOUDFLARE_AUTH" --cloudflare-zone="$CLOUDFLARE_ZONE"
